@@ -65,7 +65,7 @@ def init_database():
         mongo_client = MongoClient(
             MONGODB_URI, 
             serverSelectionTimeoutMS=5000,
-            maxPoolSize=50,  # Increased connection pool
+            maxPoolSize=50,
             connectTimeoutMS=30000,
             socketTimeoutMS=30000
         )
@@ -292,24 +292,24 @@ class DataManager:
         self.channels = []
         self.users = {}
         self.referrals = {}
-        self._lock = asyncio.Lock()
-        asyncio.create_task(self.async_init())
-    
-    async def async_init(self):
-        """Async initialization"""
-        await self.load_all_data()
+        self._lock = threading.Lock()  # Use threading lock for sync operations
+        
+        # Load data synchronously during initialization
+        self._load_all_data_sync()
+        
+        # Initialize channels from environment variable
         self.init_channels_from_env()
         
         # Backup data on exit
-        atexit.register(lambda: asyncio.run(self.backup_all_data()))
+        atexit.register(self._backup_all_data_sync)
     
-    async def load_all_data(self):
-        """Load all data from storage asynchronously"""
+    def _load_all_data_sync(self):
+        """Load all data from storage synchronously"""
         logger.info("📂 Loading data from storage...")
-        async with self._lock:
-            self.channels = await Storage.load_channels()
-            self.users = await Storage.load_users()
-            self.referrals = await Storage.load_referrals()
+        with self._lock:
+            self.channels = Storage._load_channels_sync()
+            self.users = Storage._load_users_sync()
+            self.referrals = Storage._load_referrals_sync()
         logger.info(f"✅ Loaded {len(self.channels)} channels, {len(self.users)} users, {len(self.referrals)} referrals")
     
     def init_channels_from_env(self):
@@ -354,14 +354,40 @@ class DataManager:
         except Exception as e:
             logger.error(f"Error adding channel from env: {e}")
     
-    async def backup_all_data(self):
-        """Backup all data to storage asynchronously"""
+    def _backup_all_data_sync(self):
+        """Backup all data to storage synchronously"""
         logger.info("💾 Backing up data to storage...")
-        async with self._lock:
+        with self._lock:
+            Storage._save_channels_sync(self.channels)
+            Storage._save_users_sync(self.users)
+            Storage._save_referrals_sync(self.referrals)
+        logger.info(f"✅ Data backed up: {len(self.channels)} channels, {len(self.users)} users, {len(self.referrals)} referrals")
+    
+    async def backup_all_data_async(self):
+        """Backup all data to storage asynchronously"""
+        logger.info("💾 Backing up data to storage (async)...")
+        async with self._async_lock():
             await Storage.save_channels(self.channels)
             await Storage.save_users(self.users)
             await Storage.save_referrals(self.referrals)
-        logger.info(f"✅ Data backed up: {len(self.channels)} channels, {len(self.users)} users, {len(self.referrals)} referrals")
+        logger.info(f"✅ Data backed up (async): {len(self.channels)} channels, {len(self.users)} users, {len(self.referrals)} referrals")
+    
+    def _async_lock(self):
+        """Create async lock for async operations"""
+        class AsyncLock:
+            def __init__(self, lock):
+                self._lock = lock
+            
+            async def __aenter__(self):
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(executor, self._lock.acquire)
+                return self
+            
+            async def __aexit__(self, exc_type, exc, tb):
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(executor, self._lock.release)
+        
+        return AsyncLock(self._lock)
     
     def get_stats(self) -> str:
         """Get data statistics"""
@@ -393,7 +419,7 @@ class UserManager:
         """Get user data asynchronously"""
         user_str = str(user_id)
         
-        async with data_manager._lock:
+        async with data_manager._async_lock():
             if user_str in data_manager.users:
                 return data_manager.users[user_str]
             
@@ -419,7 +445,7 @@ class UserManager:
     async def update_user(user_id: int, updates: Dict):
         """Update user data asynchronously"""
         user_str = str(user_id)
-        async with data_manager._lock:
+        async with data_manager._async_lock():
             if user_str in data_manager.users:
                 data_manager.users[user_str].update(updates)
                 data_manager.users[user_str]['last_active'] = datetime.now().isoformat()
@@ -471,7 +497,7 @@ class UserManager:
         referred_str = str(referred_id)
         
         # Check if already referred
-        async with data_manager._lock:
+        async with data_manager._async_lock():
             if referred_str in data_manager.referrals:
                 logger.info(f"User {referred_id} already referred by {data_manager.referrals[referred_str]}")
                 return False
@@ -635,7 +661,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 # Find referrer by code
                 referrer_found = None
-                async with data_manager._lock:
+                # Use lock for thread-safe access
+                async with data_manager._async_lock():
                     for user_id_str, user_data_item in data_manager.users.items():
                         if user_data_item.get('referral_code') == referral_code:
                             referrer_found = int(user_id_str)
@@ -888,9 +915,6 @@ async def show_main_menu_callback(update: Update, context: ContextTypes.DEFAULT_
     except Exception as e:
         logger.error(f"Error in show_main_menu_callback: {e}")
 
-# Rest of the callback handlers remain similar but with async operations...
-# [Previous callback handlers like balance_callback, withdraw_callback, etc. should also be updated to use async methods]
-
 async def balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show balance details"""
     try:
@@ -917,6 +941,36 @@ async def balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Error in balance_callback: {e}")
+
+async def withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show withdrawal options"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        user_data = await UserManager.get_user(user.id)
+        
+        message = (
+            f"📤 **Withdrawal**\n\n"
+            f"💰 **Balance:** ₹{user_data.get('balance', 0):.2f}\n"
+            f"📦 **Minimum:** ₹10\n\n"
+            "**How to withdraw:**\n"
+            "Use command: `/withdraw <amount> <method>`\n\n"
+            "**Examples:**\n"
+            "`/withdraw 50 UPI`\n"
+            "`/withdraw 100 Paytm`\n\n"
+            "**Methods:** UPI, Paytm, PhonePe, Bank"
+        )
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]]
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in withdraw_callback: {e}")
 
 async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /withdraw command"""
@@ -996,6 +1050,398 @@ async def notify_admins_withdrawal(bot, user, amount: float, method: str):
         except Exception as e:
             logger.error(f"Failed to notify admin {admin_id}: {e}")
 
+async def history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show transaction history"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        user_data = await UserManager.get_user(user.id)
+        
+        transactions = user_data.get('transactions', [])
+        
+        if not transactions:
+            message = "📜 **No transactions yet**\n\nShare your invite link to start earning!"
+        else:
+            message = "📜 **Transaction History**\n\n"
+            for tx in reversed(transactions[-10:]):
+                amount = tx.get('amount', 0)
+                tx_type = tx.get('type', 'credit')
+                description = tx.get('description', '')
+                date_str = tx.get('date', '')
+                
+                try:
+                    date = datetime.fromisoformat(date_str)
+                    formatted_date = date.strftime('%d %b %H:%M')
+                except:
+                    formatted_date = date_str
+                
+                symbol = "➕" if tx_type == 'credit' else "➖"
+                message += f"`{formatted_date}` {symbol} ₹{amount:.2f}\n{description}\n\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]]
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in history_callback: {e}")
+
+async def referrals_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show referral stats"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        user_data = await UserManager.get_user(user.id)
+        
+        # Get referred users
+        referred_users = []
+        async with data_manager._async_lock():
+            for referred_str, referrer_str in data_manager.referrals.items():
+                if referrer_str == str(user.id):
+                    referred_user_id = int(referred_str)
+                    referred_user = await UserManager.get_user(referred_user_id)
+                    referred_users.append(referred_user)
+        
+        message = (
+            f"👥 **Referral Program**\n\n"
+            f"📊 **Total Referrals:** {user_data.get('referral_count', 0)}\n"
+            f"💰 **Earned from Referrals:** ₹{user_data.get('referral_count', 0):.2f}\n"
+            f"💵 **Earn per Referral:** ₹1.00\n\n"
+        )
+        
+        if referred_users:
+            message += "**Your Referrals:**\n"
+            for i, ref_user in enumerate(referred_users[:10], 1):
+                message += f"{i}. User ID: {ref_user.get('user_id', 'N/A')}\n"
+            if len(referred_users) > 10:
+                message += f"... and {len(referred_users) - 10} more\n\n"
+        else:
+            message += "**No referrals yet.**\n\n"
+        
+        message += "**How it works:**\n"
+        message += "1. Share your invite link\n"
+        message += "2. Friend joins all channels\n"
+        message += "3. Friend starts bot with your link\n"
+        message += "4. You earn ₹1 immediately!"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔗 Get Invite Link", callback_data="invite_link")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
+        ]
+        
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in referrals_callback: {e}")
+
+async def invite_link_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show invite link"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        user_data = await UserManager.get_user(user.id)
+        
+        referral_code = user_data.get('referral_code', f"REF{user.id}")
+        invite_link = f"https://t.me/{context.bot.username}?start={referral_code}"
+        
+        message = (
+            f"🔗 **Your Invite Link**\n\n"
+            f"Share this link to earn ₹1 per referral:\n\n"
+            f"`{invite_link}`\n\n"
+            f"**Your Stats:**\n"
+            f"• Referrals: {user_data.get('referral_count', 0)}\n"
+            f"• Earned: ₹{user_data.get('referral_count', 0) * 1:.2f}\n\n"
+            f"**Important:**\n"
+            f"• Each user can use your link only once\n"
+            f"• You earn when they complete all steps\n"
+            f"• No duplicate earnings from same user\n\n"
+            f"**Referral Code:** `{referral_code}`"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("📤 Share Link", url=f"https://t.me/share/url?url={invite_link}&text=Join%20this%20bot%20to%20earn%20money%21")],
+            [InlineKeyboardButton("👥 Referral Stats", callback_data="referrals")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
+        ]
+        
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in invite_link_callback: {e}")
+
+# Admin Commands - Channel management removed, only viewing
+async def list_channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all channels - admin only (read-only)"""
+    try:
+        user = update.effective_user
+        
+        if user.id not in ADMIN_IDS:
+            await update.message.reply_text("❌ Admin only")
+            return
+        
+        channels = ChannelManager.get_channels()
+        
+        if not channels:
+            await update.message.reply_text(
+                "📭 No channels configured.\n\n"
+                "ℹ️ **To add channels:**\n"
+                "Set the INITIAL_CHANNELS environment variable.\n"
+                "Format: -1001234567890,@channel_username\n"
+                "Separate multiple channels with commas."
+            )
+            return
+        
+        message = "📢 **Required Channels (Configured via Environment):**\n\n"
+        for i, channel in enumerate(channels, 1):
+            message += f"{i}. {channel.get('name', 'Channel')}\n"
+            message += f"   `{channel.get('chat_id', 'N/A')}`\n\n"
+        
+        message += "\nℹ️ **Note:** Channels can only be configured via the INITIAL_CHANNELS environment variable."
+        
+        await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in list_channels_command: {e}")
+
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Restart options - admin only"""
+    try:
+        user = update.effective_user
+        
+        if user.id not in ADMIN_IDS:
+            await update.message.reply_text("❌ Admin only")
+            return
+        
+        # Check for reset flag
+        if context.args and context.args[0].lower() == 'reset':
+            keyboard = [
+                [InlineKeyboardButton("✅ Yes, Reset All Data", callback_data="confirm_reset")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="admin_panel")]
+            ]
+            
+            await update.message.reply_text(
+                "⚠️ **WARNING: Data Reset**\n\n"
+                "This will delete ALL data:\n"
+                "• All users and balances\n"
+                "• All referral records\n\n"
+                "**Channels will NOT be affected** (configured via environment)\n\n"
+                "**This action cannot be undone!**\n\n"
+                "Are you sure you want to reset all data?",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await update.message.reply_text(
+                "🔄 **Restart Options**\n\n"
+                "Usage:\n"
+                "• `/restart` - Show this menu\n"
+                "• `/restart reset` - Reset all data\n\n"
+                "**Note:** Bot will continue running, only user data will be cleared."
+            )
+    except Exception as e:
+        logger.error(f"Error in restart_command: {e}")
+
+async def confirm_reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirm reset data"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        
+        if user.id not in ADMIN_IDS:
+            await query.answer("❌ Admin only", show_alert=True)
+            return
+        
+        # Reset user data only (channels remain)
+        async with data_manager._async_lock():
+            data_manager.users.clear()
+            data_manager.referrals.clear()
+            
+            # Save empty data
+            await Storage.save_users({})
+            await Storage.save_referrals({})
+        
+        await query.edit_message_text(
+            "✅ **User Data Reset!**\n\n"
+            "• Users: 0\n"
+            "• Referrals: 0\n\n"
+            "Channels remain as configured in environment."
+        )
+        
+        logger.warning(f"Admin {user.id} reset all user data")
+    except Exception as e:
+        logger.error(f"Error in confirm_reset_callback: {e}")
+
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Backup data - admin only"""
+    try:
+        user = update.effective_user
+        
+        if user.id not in ADMIN_IDS:
+            await update.message.reply_text("❌ Admin only")
+            return
+        
+        # Force backup
+        await data_manager.backup_all_data_async()
+        
+        stats = data_manager.get_stats()
+        await update.message.reply_text(
+            f"✅ **Data Backup Complete!**\n\n{stats}\n\n"
+            f"Data is safely stored in {'MongoDB' if db_connected else 'local files'}."
+        )
+    except Exception as e:
+        logger.error(f"Error in backup_command: {e}")
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show statistics - admin only"""
+    try:
+        user = update.effective_user
+        
+        if user.id not in ADMIN_IDS:
+            await update.message.reply_text("❌ Admin only")
+            return
+        
+        stats = data_manager.get_stats()
+        await update.message.reply_text(stats, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in stats_command: {e}")
+
+async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin panel"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        
+        if user.id not in ADMIN_IDS:
+            await query.answer("❌ Admin only", show_alert=True)
+            return
+        
+        stats = data_manager.get_stats()
+        
+        message = (
+            f"👑 **Admin Panel**\n\n"
+            f"{stats}\n\n"
+            "**Commands:**\n"
+            "• `/listchannels` - View channels (read-only)\n"
+            "• `/broadcast <message>` - Broadcast\n"
+            "• `/restart` - Restart options\n"
+            "• `/backup` - Backup data\n"
+            "• `/stats` - Show statistics\n\n"
+            "ℹ️ **Channel Configuration:**\n"
+            "Channels are configured via INITIAL_CHANNELS environment variable."
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("📢 View Channels", callback_data="admin_channels")],
+            [InlineKeyboardButton("📊 Stats", callback_data="admin_stats")],
+            [InlineKeyboardButton("💾 Backup", callback_data="admin_backup")],
+            [InlineKeyboardButton("🔄 Restart", callback_data="admin_restart")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
+        ]
+        
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in admin_panel_callback: {e}")
+
+async def admin_channels_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin channel view (read-only)"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        
+        if user.id not in ADMIN_IDS:
+            await query.answer("❌ Admin only", show_alert=True)
+            return
+        
+        channels = ChannelManager.get_channels()
+        
+        if not channels:
+            message = "📭 **No Channels Configured**\n\n"
+            message += "ℹ️ **To add channels:**\n"
+            message += "Set the INITIAL_CHANNELS environment variable.\n"
+            message += "Format: -1001234567890,@channel_username\n"
+            message += "Separate multiple channels with commas."
+        else:
+            message = f"📢 **Configured Channels (Read-Only)**\n\nTotal: {len(channels)}\n\n"
+            for i, channel in enumerate(channels, 1):
+                message += f"{i}. {channel.get('name', 'Channel')}\n"
+                message += f"   `{channel.get('chat_id', 'N/A')}`\n\n"
+            
+            message += "\nℹ️ **Note:** Channels can only be configured via environment variable."
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Refresh", callback_data="admin_channels")],
+            [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+        ]
+        
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in admin_channels_callback: {e}")
+
+async def admin_handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle admin callbacks"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        
+        if data == "admin_stats":
+            stats = data_manager.get_stats()
+            await query.edit_message_text(
+                text=stats,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+                ])
+            )
+        
+        elif data == "admin_backup":
+            await data_manager.backup_all_data_async()
+            await query.edit_message_text(
+                text="✅ **Backup Complete!**\n\nAll data saved to storage.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+                ])
+            )
+        
+        elif data == "admin_restart":
+            await query.edit_message_text(
+                text="🔄 **Restart Options**\n\n"
+                     "Use command: `/restart` for options.\n"
+                     "Or `/restart reset` to reset all user data.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Reset User Data", callback_data="confirm_reset")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+                ])
+            )
+    except Exception as e:
+        logger.error(f"Error in admin_handle_callback: {e}")
+
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Broadcast message - admin only"""
     try:
@@ -1051,6 +1497,27 @@ async def send_broadcast_message(bot, user_id: int, message: str) -> bool:
     except Exception as e:
         logger.debug(f"Failed to send to user {user_id}: {e}")
         return False
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show help"""
+    try:
+        await update.message.reply_text(
+            "❓ **Help**\n\n"
+            "**Commands:**\n"
+            "• /start - Start bot\n"
+            "• /withdraw - Withdraw money\n"
+            "• /help - Show this message\n\n"
+            "**How to Earn:**\n"
+            "• Join required channels\n"
+            "• Share your invite link\n"
+            "• Earn ₹1 per referral\n\n"
+            "**Withdrawal:**\n"
+            "• Minimum: ₹10\n"
+            "• Methods: UPI, Paytm, PhonePe, Bank\n"
+            "• Processing: 24 hours"
+        )
+    except Exception as e:
+        logger.error(f"Error in help_command: {e}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log errors and handle them gracefully"""
