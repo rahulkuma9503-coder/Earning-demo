@@ -10,4 +10,4 @@ motor<3.6
 
 # Optional for making external HTTP requests
 aiohttp==3.9.1
-
+aioredis
