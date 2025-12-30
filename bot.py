@@ -897,7 +897,7 @@ async def show_join_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             else:
                 await update.message.reply_text(
                     message_text,
-                    reply_mup=InlineKeyboardMarkup(keyboard)
+                    reply_markup=InlineKeyboardMarkup(keyboard)
                 )
         else:
             await show_main_menu(update, context)
@@ -1316,19 +1316,13 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ==================== MAIN FUNCTION ====================
 
-async def main():
-    """Main async function to start the bot"""
+def main():
+    """Main function to start the bot - compatible with Render"""
     if not BOT_TOKEN:
         logger.error("❌ BOT_TOKEN not set")
         return
     
-    # Initialize database
-    await init_database()
-    
-    # Initialize data manager
-    await data_manager.initialize()
-    
-    # Create bot application with async support
+    # Create bot application
     application = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -1367,33 +1361,52 @@ async def main():
     application.add_handler(CallbackQueryHandler(admin_channels_callback, pattern="^admin_channels$"))
     application.add_handler(CallbackQueryHandler(admin_handle_callback, pattern="^admin_"))
     
-    # Get bot info
-    try:
-        bot_info = await application.bot.get_me()
-        bot_username = bot_info.username
-    except Exception as e:
-        logger.warning(f"Could not fetch bot username: {e}")
-        bot_username = "unknown"
+    # Initialize everything asynchronously
+    async def initialize_app():
+        # Initialize database
+        await init_database()
+        # Initialize data manager
+        await data_manager.initialize()
+        
+        # Get bot info
+        try:
+            bot_info = await application.bot.get_me()
+            bot_username = bot_info.username
+        except Exception as e:
+            logger.warning(f"Could not fetch bot username: {e}")
+            bot_username = "unknown"
+        
+        logger.info("🤖 Bot is starting...")
+        print("=" * 50)
+        print(f"✅ Bot started successfully!")
+        print(f"🤖 Bot username: @{bot_username}")
+        print(f"👑 Admin IDs: {ADMIN_IDS}")
+        print(f"📢 Channels configured: {len(data_manager.channels)}")
+        print(f"👥 Users loaded: {len(data_manager.users)}")
+        print(f"🔗 Referrals: {len(data_manager.referrals)}")
+        print(f"💾 Storage: {'✅ MongoDB' if mongo_client else '📁 Local files'}")
+        print("=" * 50)
+        print("✅ Bot is now ready to handle multiple users concurrently!")
+        
+        return application
     
-    logger.info("🤖 Bot is starting...")
-    print("=" * 50)
-    print(f"✅ Bot started successfully!")
-    print(f"🤖 Bot username: @{bot_username}")
-    print(f"👑 Admin IDs: {ADMIN_IDS}")
-    print(f"📢 Channels configured: {len(data_manager.channels)}")
-    print(f"👥 Users loaded: {len(data_manager.users)}")
-    print(f"🔗 Referrals: {len(data_manager.referrals)}")
-    print(f"💾 Storage: {'✅ MongoDB' if mongo_client else '📁 Local files'}")
-    print("=" * 50)
-    print("✅ Bot is now ready to handle multiple users concurrently!")
-    
+    # Run the bot with polling
     try:
-        # Run bot with polling
-        await application.run_polling(
+        # Start the async initialization and polling
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Initialize the app
+        app = loop.run_until_complete(initialize_app())
+        
+        # Start polling
+        print("🔄 Starting bot polling...")
+        app.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
             close_loop=False
         )
+        
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
@@ -1401,4 +1414,4 @@ async def main():
         print(f"❌ Bot stopped: {e}")
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
