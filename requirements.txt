@@ -1,0 +1,8 @@
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+pymongo[srv]==4.6.0
+redis==5.0.1
+apscheduler==3.10.4
+Flask==2.3.3
+gunicorn==21.2.0
+requests==2.31.0

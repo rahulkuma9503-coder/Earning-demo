@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: telegram-referral-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: PORT
+        value: 8080
+      - key: MONGODB_URI
+        sync: false
+    healthCheckPath: /
+    autoDeploy: true
