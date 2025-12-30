@@ -859,7 +859,7 @@ async def get_invite_link(bot, chat_id, channel_name: str = None):
         return None
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command - SILENT VERSION: No notifications"""
+    """Handle /start command - Show only welcome and referral bonus notifications"""
     try:
         user = update.effective_user
         
@@ -929,7 +929,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             notify_referrer_completed(context.bot, pending_referrer, user)
                         )
                 
-                # Show main menu without any success messages
+                # Show welcome bonus notification if given
+                if welcome_bonus_given:
+                    await update.message.reply_text("🎉 You received ₹1 welcome bonus!")
+                
+                # Show main menu
                 await show_main_menu(update, context)
                 
         except asyncio.TimeoutError:
@@ -944,18 +948,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def notify_referrer_completed(bot, referrer_id: int, referred_user):
-    """Notify referrer about COMPLETED referral (user has joined all channels) - SIMPLIFIED"""
+    """Notify referrer about COMPLETED referral - Show referral bonus notification"""
     try:
         user_data = await UserManager.get_user(referrer_id)
         await bot.send_message(
             chat_id=referrer_id,
-            text=f"🎉 Referral completed! You earned ₹1.00.\nNew balance: ₹{user_data.get('balance', 0):.2f}"
+            text=f"🎉 Referral bonus! You earned ₹1 from {referred_user.first_name}. New balance: ₹{user_data.get('balance', 0):.2f}"
         )
     except Exception as e:
         logger.error(f"Failed to notify referrer about completed referral: {e}")
 
 async def show_join_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, not_joined: List[Dict]):
-    """Show join buttons for channels - PLAIN TEXT VERSION"""
+    """Show join buttons for channels"""
     try:
         user = update.effective_user
         
@@ -996,7 +1000,8 @@ async def show_join_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             message_text = (
                 f"Welcome {user.first_name}!\n\n"
                 f"Join {len(not_joined)} channel(s) to continue.\n"
-                f"After joining, click 'Verify Join'."
+                f"After joining, click 'Verify Join'.\n\n"
+                f"🎁 Get ₹1 welcome bonus after joining!"
             )
             
             if update.callback_query:
@@ -1029,7 +1034,7 @@ async def no_invite_link_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer("Contact admin for manual add.", show_alert=True)
 
 async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle verify join button callback - SILENT VERSION"""
+    """Handle verify join button callback - Show only welcome bonus notification"""
     try:
         query = update.callback_query
         await query.answer()
@@ -1047,7 +1052,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 await UserManager.update_user(user.id, {'has_joined_channels': True})
                 
                 # Give welcome bonus if not already received
-                await UserManager.give_welcome_bonus(user.id)
+                welcome_bonus_given = await UserManager.give_welcome_bonus(user.id)
                 
                 # Check if user has a pending referral to complete
                 pending_referrer = await UserManager.get_pending_referrer(user.id)
@@ -1061,7 +1066,11 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                             notify_referrer_completed(context.bot, pending_referrer, user)
                         )
                 
-                # Just show main menu without success message
+                # Show welcome bonus notification if given
+                if welcome_bonus_given:
+                    await query.message.reply_text("🎉 You received ₹1 welcome bonus!")
+                
+                # Just show main menu
                 await show_main_menu_callback(update, context)
             else:
                 # Show updated join buttons
@@ -1075,17 +1084,16 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_main_menu_callback(update, context)
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show main menu to user - PLAIN TEXT"""
+    """Show main menu to user - Clean version"""
     try:
         user = update.effective_user
         user_data = await UserManager.get_user(user.id)
         
         message = (
-            f"Welcome back, {user.first_name}!\n\n"
-            f"Balance: ₹{user_data.get('balance', 0):.2f}\n"
-            f"Referrals: {user_data.get('referral_count', 0)}\n"
-            f"Total Earned: ₹{user_data.get('total_earned', 0):.2f}\n"
-            f"Total Withdrawn: ₹{user_data.get('total_withdrawn', 0):.2f}\n\n"
+            f"Welcome, {user.first_name}!\n\n"
+            f"💰 Balance: ₹{user_data.get('balance', 0):.2f}\n"
+            f"👥 Referrals: {user_data.get('referral_count', 0)}\n"
+            f"📊 Total Earned: ₹{user_data.get('total_earned', 0):.2f}\n\n"
             f"Your Referral Code: {user_data.get('referral_code', '')}"
         )
         
@@ -1122,7 +1130,7 @@ async def show_main_menu_callback(update: Update, context: ContextTypes.DEFAULT_
     await show_main_menu(update, context)
 
 async def balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle balance button callback - PLAIN TEXT"""
+    """Handle balance button callback"""
     try:
         query = update.callback_query
         await query.answer()
@@ -1152,7 +1160,7 @@ async def balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in balance_callback: {e}")
 
 async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /withdraw command - PLAIN TEXT"""
+    """Handle /withdraw command"""
     try:
         user = update.effective_user
         
@@ -1233,7 +1241,7 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("An error occurred. Please try again.")
 
 async def withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle withdraw button callback - PLAIN TEXT"""
+    """Handle withdraw button callback"""
     try:
         query = update.callback_query
         await query.answer()
@@ -1263,7 +1271,7 @@ async def withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in withdraw_callback: {e}")
 
 async def history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle history button callback - PLAIN TEXT"""
+    """Handle history button callback"""
     try:
         query = update.callback_query
         await query.answer()
@@ -1297,7 +1305,7 @@ async def history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in history_callback: {e}")
 
 async def referrals_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle referrals button callback - PLAIN TEXT"""
+    """Handle referrals button callback"""
     try:
         query = update.callback_query
         await query.answer()
@@ -1334,7 +1342,7 @@ async def referrals_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Error in referrals_callback: {e}")
 
 async def invite_link_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle invite link button callback - PLAIN TEXT"""
+    """Handle invite link button callback"""
     try:
         query = update.callback_query
         await query.answer()
@@ -1366,7 +1374,7 @@ async def invite_link_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Error in invite_link_callback: {e}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command - PLAIN TEXT"""
+    """Handle /help command"""
     await update.message.reply_text(
         "Bot Help\n\n"
         "Available Commands:\n"
@@ -1412,7 +1420,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(stats, parse_mode=ParseMode.HTML)
 
 async def list_channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /listchannels command (admin only) - PLAIN TEXT"""
+    """Handle /listchannels command (admin only)"""
     user = update.effective_user
     if user.id not in ADMIN_IDS:
         await update.message.reply_text("Admin only")
@@ -1431,7 +1439,7 @@ async def list_channels_command(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(message)
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /broadcast command (admin only) - PLAIN TEXT"""
+    """Handle /broadcast command (admin only)"""
     user = update.effective_user
     if user.id not in ADMIN_IDS:
         await update.message.reply_text("Admin only")
@@ -1459,7 +1467,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin panel - HTML kept for admin"""
+    """Admin panel"""
     try:
         query = update.callback_query
         await query.answer()
@@ -1501,7 +1509,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Error in admin_panel_callback: {e}")
 
 async def admin_channels_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle admin channels callback - PLAIN TEXT"""
+    """Handle admin channels callback"""
     try:
         query = update.callback_query
         await query.answer()
@@ -1535,7 +1543,7 @@ async def admin_channels_callback(update: Update, context: ContextTypes.DEFAULT_
         logger.error(f"Error in admin_channels_callback: {e}")
 
 async def admin_handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle admin callback queries - PLAIN TEXT"""
+    """Handle admin callback queries"""
     query = update.callback_query
     await query.answer()
     
@@ -1727,8 +1735,8 @@ def main():
         print("• /stats - Show statistics")
     print("\n✅ Bot is now ready to handle multiple users simultaneously!")
     print("\n🎁 NEW: ₹1 welcome bonus for all new users after joining channels!")
-    print("📝 NO notifications: Bot operates silently without success messages")
-    print("📝 Plain text: All messages use simple text format")
+    print("💰 Referral bonus notifications sent to referrers")
+    print("📝 Clean interface: Only essential notifications shown")
     
     if not db_connected:
         print("\n⚠️ WARNING: MongoDB connection failed. Using local file storage.")
