@@ -596,7 +596,8 @@ class UserManager:
                 'joined_at': datetime.now().isoformat(),
                 'last_active': datetime.now().isoformat(),
                 'transactions': [],
-                'has_joined_channels': False
+                'has_joined_channels': False,
+                'welcome_bonus_received': False  # Track if user received welcome bonus
             }
             
             data_manager.users[user_str] = user_data
@@ -705,6 +706,33 @@ class UserManager:
         """Remove pending referral"""
         await Storage.remove_pending_referral(referred_id)
         logger.info(f"🗑️ Pending referral removed for user {referred_id}")
+    
+    @staticmethod
+    async def give_welcome_bonus(user_id: int) -> bool:
+        """Give ₹1 welcome bonus to new user - returns True if bonus was given"""
+        user = await UserManager.get_user(user_id)
+        
+        if user.get('welcome_bonus_received', False):
+            return False  # Already received welcome bonus
+        
+        # Give welcome bonus
+        new_balance = user.get('balance', 0) + 1.0
+        await UserManager.update_user(user_id, {
+            'balance': new_balance,
+            'welcome_bonus_received': True,
+            'total_earned': user.get('total_earned', 0) + 1.0
+        })
+        
+        # Add transaction
+        await UserManager.add_transaction(
+            user_id,
+            1.0,
+            'credit',
+            'Welcome bonus for joining all channels'
+        )
+        
+        logger.info(f"✅ Welcome bonus given to user {user_id}")
+        return True
 
 async def check_channel_membership(bot, user_id: int) -> tuple:
     """Check channel membership concurrently"""
@@ -877,29 +905,25 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     if existing_pending:
                         if existing_pending == referrer_found:
-                            await update.message.reply_text(
-                                "📝 You already have a pending referral from this user. "
-                                "Join all channels to complete the referral!"
-                            )
+                            # Don't show message about pending referral to user
+                            pass
                         else:
-                            await update.message.reply_text(
-                                "⚠️ You already have a pending referral from another user. "
-                                "Complete that one first by joining all channels."
-                            )
+                            # Don't show message about another pending referral
+                            pass
                     else:
                         # Store as PENDING referral (not completed yet)
                         await UserManager.add_pending_referral(referrer_found, user.id)
                         
-                        # Notify referrer about PENDING referral
-                        asyncio.create_task(
-                            notify_referrer_pending(context.bot, referrer_found, user)
-                        )
+                        # REMOVED: Don't notify referrer about pending referral
+                        # asyncio.create_task(
+                        #     notify_referrer_pending(context.bot, referrer_found, user)
+                        # )
                         
+                        # Show simple message to user
                         await update.message.reply_text(
                             f"📝 **Referral Link Accepted!**\n\n"
-                            f"You were referred by user {referrer_found}.\n"
-                            f"⚠️ **Important:** They will earn ₹1.00 ONLY after you join all required channels!\n\n"
-                            f"Join all channels below and click 'Verify Join' to complete the referral."
+                            f"You will earn rewards after joining all channels.\n"
+                            f"Join all channels below and click 'Verify Join' to continue."
                         )
                 elif referrer_found == user.id:
                     await update.message.reply_text(
@@ -918,8 +942,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not has_joined and not_joined:
                 await show_join_buttons(update, context, not_joined)
             else:
-                # User has joined all channels - check for pending referral
+                # User has joined all channels
                 await UserManager.update_user(user.id, {'has_joined_channels': True})
+                
+                # Give welcome bonus if not already received
+                welcome_bonus_given = await UserManager.give_welcome_bonus(user.id)
                 
                 # Check if user has a pending referral to complete
                 pending_referrer = await UserManager.get_pending_referrer(user.id)
@@ -936,11 +963,27 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             notify_referrer_completed(context.bot, pending_referrer, user)
                         )
                         
-                        await update.message.reply_text(
-                            f"🎉 **Referral Completed!**\n\n"
-                            f"You have successfully completed the referral process!\n"
-                            f"User {pending_referrer} has earned ₹1.00 for your join!"
-                        )
+                        message = "✅ **Successfully Verified!**\n\n"
+                        if welcome_bonus_given:
+                            message += "🎉 **Welcome Bonus:** ₹1.00 credited to your account!\n"
+                        message += f"🎉 **Referral Bonus:** ₹1.00 credited to user {pending_referrer}!\n\n"
+                        message += "Now you can access all bot features."
+                        
+                        await update.message.reply_text(message)
+                    else:
+                        message = "✅ **Successfully Verified!**\n\n"
+                        if welcome_bonus_given:
+                            message += "🎉 **Welcome Bonus:** ₹1.00 credited to your account!\n\n"
+                        message += "Now you can access all bot features."
+                        
+                        await update.message.reply_text(message)
+                else:
+                    message = "✅ **Successfully Verified!**\n\n"
+                    if welcome_bonus_given:
+                        message += "🎉 **Welcome Bonus:** ₹1.00 credited to your account!\n\n"
+                    message += "Now you can access all bot features."
+                    
+                    await update.message.reply_text(message)
                 
                 await show_main_menu(update, context)
                 
@@ -962,31 +1005,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-async def notify_referrer_pending(bot, referrer_id: int, referred_user):
-    """Notify referrer about PENDING referral (user hasn't joined channels yet)"""
-    try:
-        await bot.send_message(
-            chat_id=referrer_id,
-            text=f"📝 **Pending Referral**\n\n"
-                 f"A new user has started the bot with your referral link:\n"
-                 f"• Name: {referred_user.first_name}\n"
-                 f"• User ID: {referred_user.id}\n\n"
-                 f"⚠️ **Important:** You will earn ₹1.00 ONLY after they join all required channels!\n\n"
-                 f"Current balance: ₹{(await UserManager.get_user(referrer_id))['balance']:.2f}"
-        )
-    except Exception as e:
-        logger.error(f"Failed to notify referrer about pending referral: {e}")
-
 async def notify_referrer_completed(bot, referrer_id: int, referred_user):
     """Notify referrer about COMPLETED referral (user has joined all channels)"""
     try:
         await bot.send_message(
             chat_id=referrer_id,
             text=f"🎉 **Referral Completed!**\n\n"
-                 f"The user has joined all required channels:\n"
-                 f"• Name: {referred_user.first_name}\n"
-                 f"• User ID: {referred_user.id}\n"
-                 f"• Bonus: ₹1.00\n\n"
+                 f"User {referred_user.first_name} (ID: {referred_user.id}) "
+                 f"has joined all required channels and you have earned ₹1.00!\n\n"
                  f"💰 Your new balance: ₹{(await UserManager.get_user(referrer_id))['balance']:.2f}"
         )
     except Exception as e:
@@ -1047,7 +1073,7 @@ async def show_join_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 f"👋 Welcome {user.first_name}!\n\n"
                 f"To use this bot, you need to join {len(not_joined)} channel(s).\n"
                 f"After joining all channels, click 'Verify Join' below.\n\n"
-                f"⚠️ **Important:** Referral bonuses are only credited after joining all channels!"
+                f"🎁 **Special Offer:** Get ₹1 welcome bonus after joining all channels!"
             )
             
             if update.callback_query:
@@ -1119,6 +1145,9 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             if has_joined:
                 await UserManager.update_user(user.id, {'has_joined_channels': True})
                 
+                # Give welcome bonus if not already received
+                welcome_bonus_given = await UserManager.give_welcome_bonus(user.id)
+                
                 # Check if user has a pending referral to complete
                 pending_referrer = await UserManager.get_pending_referrer(user.id)
                 if pending_referrer and not UserManager.is_referred(user.id):
@@ -1134,22 +1163,27 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                             notify_referrer_completed(context.bot, pending_referrer, user)
                         )
                         
-                        await query.edit_message_text(
-                            "✅ **Verified and Referral Completed!**\n\n"
-                            "You've joined all required channels.\n"
-                            f"🎉 Referral bonus of ₹1.00 credited to user {pending_referrer}!\n\n"
-                            "Now you can access all bot features."
-                        )
+                        message = "✅ **Successfully Verified!**\n\n"
+                        if welcome_bonus_given:
+                            message += "🎉 **Welcome Bonus:** ₹1.00 credited to your account!\n"
+                        message += f"🎉 **Referral Bonus:** ₹1.00 credited to user {pending_referrer}!\n\n"
+                        message += "Now you can access all bot features."
+                        
+                        await query.edit_message_text(message)
                     else:
-                        await query.edit_message_text(
-                            "✅ **Verified!** You've joined all required channels.\n\n"
-                            "Now you can access all bot features."
-                        )
+                        message = "✅ **Successfully Verified!**\n\n"
+                        if welcome_bonus_given:
+                            message += "🎉 **Welcome Bonus:** ₹1.00 credited to your account!\n\n"
+                        message += "Now you can access all bot features."
+                        
+                        await query.edit_message_text(message)
                 else:
-                    await query.edit_message_text(
-                        "✅ **Verified!** You've joined all required channels.\n\n"
-                        "Now you can access all bot features."
-                    )
+                    message = "✅ **Successfully Verified!**\n\n"
+                    if welcome_bonus_given:
+                        message += "🎉 **Welcome Bonus:** ₹1.00 credited to your account!\n\n"
+                    message += "Now you can access all bot features."
+                    
+                    await query.edit_message_text(message)
                 
                 await show_main_menu_callback(update, context)
             else:
@@ -1172,8 +1206,13 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         user_data = await UserManager.get_user(user.id)
         
+        welcome_bonus_note = ""
+        if user_data.get('welcome_bonus_received', False):
+            welcome_bonus_note = "🎁 Welcome bonus received!\n\n"
+        
         message = (
             f"👋 Welcome back, {user.first_name}!\n\n"
+            f"{welcome_bonus_note}"
             f"💰 Balance: ₹{user_data.get('balance', 0):.2f}\n"
             f"👥 Referrals: {user_data.get('referral_count', 0)}\n\n"
             f"📊 Total Earned: ₹{user_data.get('total_earned', 0):.2f}\n"
@@ -1450,12 +1489,11 @@ async def invite_link_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             f"Share this link to earn ₹1.00 for each new user who:\n"
             f"1. Clicks your link\n"
             f"2. Joins all required channels\n\n"
-            f"**Link:**\n`{invite_link}`\n\n"
-            f"⚠️ **Important:** Bonus is ONLY paid after the user joins all channels!"
+            f"**Link:**\n`{invite_link}`"
         )
         
         keyboard = [
-            [InlineKeyboardButton("📤 Share", url=f"tg://msg_url?url={invite_link}&text=Join this bot to earn money!")],
+            [InlineKeyboardButton("📤 Share", url=f"tg://msg_url?url={invite_link}&text=Join this bot to earn money! Get ₹1 welcome bonus!")],
             [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
         ]
         
@@ -1476,10 +1514,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/withdraw <amount> <method> - Withdraw money\n"
         "/help - Show this help\n\n"
         "**How to Earn:**\n"
-        "1. Share your referral link\n"
-        "2. Earn ₹1.00 when someone joins via your link AND completes all channel joins\n"
-        "3. Minimum withdrawal: ₹10.00\n\n"
-        "**Note:** Referral bonuses are ONLY credited after users join all required channels!",
+        "1. Get ₹1 welcome bonus after joining all channels\n"
+        "2. Share your referral link\n"
+        "3. Earn ₹1.00 when someone joins via your link AND completes all channel joins\n"
+        "4. Minimum withdrawal: ₹10.00\n\n"
+        "**Note:** Referral bonuses are credited after users join all required channels!",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -1844,7 +1883,9 @@ def main():
         print("• /listchannels - View configured channels (read-only)")
         print("• /stats - Show statistics")
     print("\n✅ Bot is now ready to handle multiple users simultaneously!")
-    print("\n⚠️ IMPORTANT: Referral bonuses are now ONLY credited AFTER users join all channels!")
+    print("\n🎁 NEW: ₹1 welcome bonus for all new users after joining channels!")
+    print("⚠️ IMPORTANT: Referral bonuses are now ONLY credited AFTER users join all channels!")
+    print("📝 Pending referrals are not shown to anyone (only tracked internally)")
     
     if not db_connected:
         print("\n⚠️ WARNING: MongoDB connection failed. Using local file storage.")
