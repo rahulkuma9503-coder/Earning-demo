@@ -2,6 +2,8 @@ import os
 import logging
 import asyncio
 import sys
+import time
+import random
 from datetime import datetime
 from typing import List, Dict, Optional
 import json
@@ -1322,6 +1324,11 @@ def main():
         logger.error("❌ BOT_TOKEN not set")
         return
     
+    # Add random delay to prevent conflict with other instances
+    delay = random.uniform(2, 5)
+    logger.info(f"⏳ Starting with {delay:.1f}s delay to avoid conflicts...")
+    time.sleep(delay)
+    
     # Create bot application
     application = (
         Application.builder()
@@ -1399,12 +1406,14 @@ def main():
         # Initialize the app
         app = loop.run_until_complete(initialize_app())
         
-        # Start polling
+        # Start polling with conflict prevention
         print("🔄 Starting bot polling...")
         app.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
-            close_loop=False
+            close_loop=False,
+            poll_interval=1.0,  # Increased poll interval to reduce conflicts
+            timeout=30
         )
         
     except KeyboardInterrupt:
@@ -1412,6 +1421,8 @@ def main():
     except Exception as e:
         logger.error(f"Bot stopped with error: {e}")
         print(f"❌ Bot stopped: {e}")
+        # Don't exit with error code to allow Render to restart if needed
+        # sys.exit(1)  # Removed to prevent automatic restart loop
 
 if __name__ == '__main__':
     main()
