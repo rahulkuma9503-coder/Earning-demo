@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import sys
 from datetime import datetime
 from typing import List, Dict, Optional
 import json
@@ -1165,8 +1166,400 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         except:
             pass
 
-# [Rest of the functions remain the same as before: show_main_menu, balance_callback, withdraw_callback, etc.]
-# They should be included from your previous code but I'm omitting them here for brevity.
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show main menu to user"""
+    try:
+        user = update.effective_user
+        user_data = await UserManager.get_user(user.id)
+        
+        message = (
+            f"👋 Welcome back, {user.first_name}!\n\n"
+            f"💰 Balance: ₹{user_data.get('balance', 0):.2f}\n"
+            f"👥 Referrals: {user_data.get('referral_count', 0)}\n\n"
+            f"📊 Total Earned: ₹{user_data.get('total_earned', 0):.2f}\n"
+            f"🏦 Total Withdrawn: ₹{user_data.get('total_withdrawn', 0):.2f}\n\n"
+            f"Your Referral Code: `{user_data.get('referral_code', '')}`"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("💰 Balance", callback_data="balance"),
+             InlineKeyboardButton("📤 Withdraw", callback_data="withdraw")],
+            [InlineKeyboardButton("📜 History", callback_data="history"),
+             InlineKeyboardButton("👥 Referrals", callback_data="referrals")],
+            [InlineKeyboardButton("🔗 Invite Link", callback_data="invite_link")]
+        ]
+        
+        # Add admin button if user is admin
+        if user.id in ADMIN_IDS:
+            keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])
+        
+        keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="refresh")])
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                text=message,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await update.message.reply_text(
+                text=message,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in show_main_menu: {e}")
+
+async def show_main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle main menu callback"""
+    await show_main_menu(update, context)
+
+async def balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle balance button callback"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        user_data = await UserManager.get_user(user.id)
+        
+        message = (
+            f"💰 **Your Balance**\n\n"
+            f"• Available Balance: ₹{user_data.get('balance', 0):.2f}\n"
+            f"• Total Earned: ₹{user_data.get('total_earned', 0):.2f}\n"
+            f"• Total Withdrawn: ₹{user_data.get('total_withdrawn', 0):.2f}\n"
+            f"• Referral Count: {user_data.get('referral_count', 0)}\n\n"
+            f"💸 Withdraw using: `/withdraw <amount> <method>`"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("📤 Withdraw", callback_data="withdraw"),
+             InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
+        ]
+        
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in balance_callback: {e}")
+
+async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /withdraw command"""
+    try:
+        user = update.effective_user
+        
+        if not user:
+            return
+        
+        # Get command arguments
+        args = context.args
+        if not args or len(args) < 2:
+            await update.message.reply_text(
+                "💰 **Withdrawal Request**\n\n"
+                "Usage: `/withdraw <amount> <method>`\n"
+                "Example: `/withdraw 50 upi`\n\n"
+                "Available methods: UPI, Bank Transfer\n"
+                "Minimum withdrawal: ₹10.00",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        
+        try:
+            amount = float(args[0])
+            method = args[1].lower()
+            
+            if amount < 10:
+                await update.message.reply_text("❌ Minimum withdrawal amount is ₹10.00")
+                return
+            
+            user_data = await UserManager.get_user(user.id)
+            
+            if user_data.get('balance', 0) < amount:
+                await update.message.reply_text(f"❌ Insufficient balance. You have ₹{user_data.get('balance', 0):.2f}")
+                return
+            
+            # Update user balance
+            new_balance = user_data.get('balance', 0) - amount
+            total_withdrawn = user_data.get('total_withdrawn', 0) + amount
+            
+            await UserManager.update_user(user.id, {
+                'balance': new_balance,
+                'total_withdrawn': total_withdrawn
+            })
+            
+            # Add transaction
+            await UserManager.add_transaction(
+                user.id,
+                -amount,
+                'withdrawal',
+                f'Withdrawal via {method}'
+            )
+            
+            # Notify admin
+            admin_message = (
+                f"📤 **New Withdrawal Request**\n\n"
+                f"👤 User: {user.first_name} (ID: {user.id})\n"
+                f"💰 Amount: ₹{amount:.2f}\n"
+                f"📝 Method: {method}\n"
+                f"🏦 New Balance: ₹{new_balance:.2f}"
+            )
+            
+            for admin_id in ADMIN_IDS:
+                try:
+                    await context.bot.send_message(chat_id=admin_id, text=admin_message)
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id}: {e}")
+            
+            await update.message.reply_text(
+                f"✅ **Withdrawal Request Submitted!**\n\n"
+                f"💰 Amount: ₹{amount:.2f}\n"
+                f"📝 Method: {method}\n"
+                f"🏦 New Balance: ₹{new_balance:.2f}\n\n"
+                f"📋 Your request has been sent to the admin for processing.\n"
+                f"You will be contacted soon for payment details."
+            )
+            
+        except ValueError:
+            await update.message.reply_text("❌ Invalid amount. Please enter a valid number.")
+            
+    except Exception as e:
+        logger.error(f"Error in withdraw_command: {e}")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
+
+async def withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle withdraw button callback"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        user_data = await UserManager.get_user(user.id)
+        
+        message = (
+            f"📤 **Withdrawal**\n\n"
+            f"💰 Available: ₹{user_data.get('balance', 0):.2f}\n"
+            f"📝 Minimum: ₹10.00\n\n"
+            f"Usage: `/withdraw <amount> <method>`\n"
+            f"Example: `/withdraw 50 upi`\n\n"
+            f"Available methods: UPI, Bank Transfer"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("💰 Check Balance", callback_data="balance"),
+             InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
+        ]
+        
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in withdraw_callback: {e}")
+
+async def history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle history button callback"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        user_data = await UserManager.get_user(user.id)
+        
+        transactions = user_data.get('transactions', [])
+        
+        if not transactions:
+            message = "📜 No transactions yet."
+        else:
+            # Show last 10 transactions
+            recent_tx = transactions[-10:]
+            tx_list = []
+            for tx in reversed(recent_tx):
+                sign = "+" if tx.get('type') == 'credit' else "-"
+                tx_list.append(f"{sign}₹{tx.get('amount', 0):.2f} - {tx.get('description', '')} ({tx.get('date', '')[:10]})")
+            
+            message = "📜 **Recent Transactions**\n\n" + "\n".join(tx_list)
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
+        ]
+        
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in history_callback: {e}")
+
+async def referrals_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle referrals button callback"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        user_data = await UserManager.get_user(user.id)
+        
+        referral_code = user_data.get('referral_code', f"REF{user.id}")
+        referral_count = user_data.get('referral_count', 0)
+        referral_earnings = user_data.get('total_earned', 0)
+        
+        message = (
+            f"👥 **Your Referrals**\n\n"
+            f"• Referral Code: `{referral_code}`\n"
+            f"• Total Referrals: {referral_count}\n"
+            f"• Earned from Referrals: ₹{referral_earnings:.2f}\n\n"
+            f"**How it works:**\n"
+            f"1. Share your referral link\n"
+            f"2. When someone joins via your link AND joins all channels\n"
+            f"3. You earn ₹1.00 per successful referral\n\n"
+            f"Share: https://t.me/{context.bot.username}?start={referral_code}"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("🔗 Share Link", callback_data="invite_link")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
+        ]
+        
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in referrals_callback: {e}")
+
+async def invite_link_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle invite link button callback"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        user_data = await UserManager.get_user(user.id)
+        
+        referral_code = user_data.get('referral_code', f"REF{user.id}")
+        invite_link = f"https://t.me/{context.bot.username}?start={referral_code}"
+        
+        message = (
+            f"🔗 **Your Referral Link**\n\n"
+            f"Share this link to earn ₹1.00 for each new user who:\n"
+            f"1. Clicks your link\n"
+            f"2. Joins all required channels\n\n"
+            f"**Link:**\n`{invite_link}`\n\n"
+            f"⚠️ **Important:** Bonus is ONLY paid after the user joins all channels!"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("📤 Share", url=f"tg://msg_url?url={invite_link}&text=Join this bot to earn money!")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
+        ]
+        
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in invite_link_callback: {e}")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help command"""
+    await update.message.reply_text(
+        "🤖 **Bot Help**\n\n"
+        "**Available Commands:**\n"
+        "/start - Start the bot\n"
+        "/withdraw <amount> <method> - Withdraw money\n"
+        "/help - Show this help\n\n"
+        "**How to Earn:**\n"
+        "1. Share your referral link\n"
+        "2. Earn ₹1.00 when someone joins via your link AND completes all channel joins\n"
+        "3. Minimum withdrawal: ₹10.00\n\n"
+        "**Note:** Referral bonuses are ONLY credited after users join all required channels!",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /restart command (admin only)"""
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Admin only")
+        return
+    
+    await update.message.reply_text("🔄 Bot restarting...")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /backup command (admin only)"""
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Admin only")
+        return
+    
+    await data_manager.backup_all_data_async()
+    await update.message.reply_text("✅ Data backed up successfully")
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /stats command (admin only)"""
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Admin only")
+        return
+    
+    stats = data_manager.get_stats()
+    await update.message.reply_text(stats, parse_mode=ParseMode.HTML)
+
+async def list_channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /listchannels command (admin only) - READ ONLY"""
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Admin only")
+        return
+    
+    channels = ChannelManager.get_channels()
+    if not channels:
+        message = "📢 No channels configured"
+    else:
+        channel_list = []
+        for i, channel in enumerate(channels, 1):
+            channel_list.append(f"{i}. {channel.get('name', 'Channel')} - `{channel.get('chat_id')}`")
+        
+        message = f"📢 **Configured Channels ({len(channels)})**\n\n" + "\n".join(channel_list)
+    
+    await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /broadcast command (admin only)"""
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Admin only")
+        return
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+    
+    message = " ".join(args)
+    
+    # Confirmation keyboard
+    keyboard = [
+        [InlineKeyboardButton("✅ Confirm", callback_data=f"admin_broadcast_confirm_{message[:50]}"),
+         InlineKeyboardButton("❌ Cancel", callback_data="admin_panel")]
+    ]
+    
+    await update.message.reply_text(
+        f"📢 **Broadcast Confirmation**\n\n"
+        f"Message: {message}\n\n"
+        f"Will be sent to {len(data_manager.users)} users.\n"
+        f"Are you sure?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin panel - FIXED to avoid Markdown parsing errors"""
@@ -1219,6 +1612,113 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         except:
             pass
+
+async def admin_channels_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle admin channels callback"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        if user.id not in ADMIN_IDS:
+            await query.answer("❌ Admin only", show_alert=True)
+            return
+        
+        channels = ChannelManager.get_channels()
+        
+        if not channels:
+            message = "📢 No channels configured"
+        else:
+            channel_list = []
+            for i, channel in enumerate(channels, 1):
+                status = "✅" if channel.get('active', True) else "❌"
+                channel_list.append(f"{i}. {status} {channel.get('name', 'Channel')} - `{channel.get('chat_id')}`")
+            
+            message = f"📢 **Configured Channels ({len(channels)})**\n\n" + "\n\n".join(channel_list)
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+        ]
+        
+        await query.edit_message_text(
+            text=message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in admin_channels_callback: {e}")
+
+async def admin_handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle admin callback queries"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    
+    if data.startswith("admin_broadcast_confirm_"):
+        # Handle broadcast confirmation
+        message = data.replace("admin_broadcast_confirm_", "")
+        
+        # Get full message from context if truncated
+        if message.endswith("..."):
+            # In a real implementation, you'd store the full message somewhere
+            await query.edit_message_text("⚠️ Message too long, please send shorter broadcast.")
+            return
+        
+        await query.edit_message_text("📢 Broadcasting to users...")
+        
+        success = 0
+        failed = 0
+        
+        for user_id_str in data_manager.users:
+            try:
+                await context.bot.send_message(
+                    chat_id=int(user_id_str),
+                    text=f"📢 **Broadcast Message**\n\n{message}"
+                )
+                success += 1
+            except:
+                failed += 1
+        
+        await query.edit_message_text(
+            f"✅ **Broadcast Complete**\n\n"
+            f"✅ Successful: {success}\n"
+            f"❌ Failed: {failed}\n"
+            f"📊 Total: {success + failed} users"
+        )
+    
+    elif data == "admin_stats":
+        stats = data_manager.get_stats()
+        await query.edit_message_text(stats, parse_mode=ParseMode.HTML)
+    
+    elif data == "admin_backup":
+        await data_manager.backup_all_data_async()
+        await query.edit_message_text("✅ Data backed up successfully")
+    
+    elif data == "admin_restart":
+        keyboard = [
+            [InlineKeyboardButton("🔄 Soft Restart", callback_data="admin_restart_soft"),
+             InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel")]
+        ]
+        await query.edit_message_text(
+            "🔄 **Restart Options**\n\n"
+            "Soft Restart: Reload data without stopping bot",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    elif data == "admin_restart_soft":
+        # Reload data from storage
+        data_manager._load_all_data_sync()
+        await query.edit_message_text("✅ Data reloaded successfully")
+    
+    elif data == "admin_panel":
+        await admin_panel_callback(update, context)
+
+async def confirm_reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle confirm reset callback"""
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text("🔄 Reset functionality is not implemented in this version.")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log errors and handle them gracefully"""
