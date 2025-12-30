@@ -1,30 +1,13 @@
-# Core dependencies
+# Core bot framework
 python-telegram-bot==20.7
+
+# Environment variables
 python-dotenv==1.0.0
 
-# Database - Choose one based on your setup:
+# MongoDB Drivers - Use these specific versions to avoid the import error
+pymongo<4.9
+motor<3.6
 
-# Option 1: MongoDB with async motor driver (Recommended for production)
-motor==3.3.1
-dnspython==2.4.2  # Required for MongoDB SRV connections
+# Optional for making external HTTP requests
+aiohttp==3.9.1
 
-# Option 2: MongoDB with synchronous pymongo (Simpler setup)
-# pymongo==4.6.1
-
-# Optional: Redis for caching (uncomment if using Redis)
-# redis==5.0.1
-# aioredis==2.0.1  # Async Redis client
-
-# HTTP server for health checks
-# (Not needed if you use a web framework like Flask/FastAPI)
-# aiohttp==3.9.1  # For async HTTP server
-
-# Additional utilities
-requests==2.31.0  # For HTTP requests if needed
-pyyaml==6.0.1    # For configuration files if needed
-
-# Development dependencies (optional)
-black==23.11.0    # Code formatting
-flake8==6.1.0     # Linting
-pytest==7.4.3     # Testing
-pytest-asyncio==0.21.1  # Async testing
